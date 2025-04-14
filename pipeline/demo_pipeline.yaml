@@ -1,0 +1,133 @@
+# PIPELINE DEFINITION
+# Name: demo-pipeline
+# Description: End-to-end demo pipeline using the Iris dataset
+components:
+  comp-load-data:
+    executorLabel: exec-load-data
+    outputDefinitions:
+      artifacts:
+        output_dataset_test_X:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+        output_dataset_test_y:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+        output_dataset_train_X:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+        output_dataset_train_y:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+  comp-serve-latest-model:
+    executorLabel: exec-serve-latest-model
+  comp-train-model:
+    executorLabel: exec-train-model
+    inputDefinitions:
+      artifacts:
+        dataset_test_X:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+        dataset_test_y:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+        dataset_train_X:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+        dataset_train_y:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+deploymentSpec:
+  executors:
+    exec-load-data:
+      container:
+        args:
+        - --output_dataset_train_X
+        - '{{$.outputs.artifacts[''output_dataset_train_X''].path}}'
+        - --output_dataset_train_y
+        - '{{$.outputs.artifacts[''output_dataset_train_y''].path}}'
+        - --output_dataset_test_X
+        - '{{$.outputs.artifacts[''output_dataset_test_X''].path}}'
+        - --output_dataset_test_y
+        - '{{$.outputs.artifacts[''output_dataset_test_y''].path}}'
+        command:
+        - python
+        - /app/load_data.py
+        image: timsmans/metro-mlops-demo:latest
+    exec-serve-latest-model:
+      container:
+        command:
+        - python
+        - /app/serve_model.py
+        image: timsmans/metro-mlops-demo:latest
+    exec-train-model:
+      container:
+        args:
+        - --dataset_train_X
+        - '{{$.inputs.artifacts[''dataset_train_X''].path}}'
+        - --dataset_train_y
+        - '{{$.inputs.artifacts[''dataset_train_y''].path}}'
+        - --dataset_test_X
+        - '{{$.inputs.artifacts[''dataset_test_X''].path}}'
+        - --dataset_test_y
+        - '{{$.inputs.artifacts[''dataset_test_y''].path}}'
+        command:
+        - python
+        - /app/train.py
+        image: timsmans/metro-mlops-demo:latest
+pipelineInfo:
+  description: End-to-end demo pipeline using the Iris dataset
+  name: demo-pipeline
+root:
+  dag:
+    tasks:
+      load-data:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-load-data
+        taskInfo:
+          name: load-data
+      serve-latest-model:
+        cachingOptions: {}
+        componentRef:
+          name: comp-serve-latest-model
+        dependentTasks:
+        - train-model
+        taskInfo:
+          name: serve-latest-model
+      train-model:
+        cachingOptions: {}
+        componentRef:
+          name: comp-train-model
+        dependentTasks:
+        - load-data
+        inputs:
+          artifacts:
+            dataset_test_X:
+              taskOutputArtifact:
+                outputArtifactKey: output_dataset_test_X
+                producerTask: load-data
+            dataset_test_y:
+              taskOutputArtifact:
+                outputArtifactKey: output_dataset_test_y
+                producerTask: load-data
+            dataset_train_X:
+              taskOutputArtifact:
+                outputArtifactKey: output_dataset_train_X
+                producerTask: load-data
+            dataset_train_y:
+              taskOutputArtifact:
+                outputArtifactKey: output_dataset_train_y
+                producerTask: load-data
+        taskInfo:
+          name: train-model
+schemaVersion: 2.1.0
+sdkVersion: kfp-2.12.1
