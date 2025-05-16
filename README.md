@@ -1,4 +1,4 @@
-# Metro MLOps usage guide
+# Metro MLOps usage guide: Mood machine example
 This guide includes a very simple, practical example of how to use the Metro MLOps platform
 It describes the different steps to take when setting up a workflow/pipeline. 
 
