@@ -2,8 +2,7 @@
 This guide includes a very simple, practical example of how to use the Metro MLOps platform
 It describes the different steps to take when setting up a workflow/pipeline. 
 
-We will be using the Iris dataset as an example:
-[Iris Github](https://github.com/venky14/Machine-Learning-with-Iris-Dataset)
+We will be creating a sentiment analysis model, using the _tweet_eval_ dataset from _huggingface_.
 
 ---
 
@@ -12,11 +11,12 @@ We will be using the Iris dataset as an example:
 1. Preparing training/testing data
 2. Setting up the training scripts and implementing MLFLow
 3. Setting up the kubeflow pipeline
-4. Using model serving API
+4. Using model serving API in a streamlit frontend
 
 ---
 
 ## Preparing training/testing data
+_The code for this step is at `scripts/prepare_data.py`_
 
 A `ml-data` bucket in MinIO was created to handle the training and testing data. How you structure this totally depends on the usecase. Some options are:
 
@@ -24,7 +24,7 @@ A `ml-data` bucket in MinIO was created to handle the training and testing data.
 - Create a training data pre-processing script in python
 - Manually uploading the data into MinIO
 
-In this guide i will be creating a data preprocessing script that will before training. 
+In this guide I will be creating a data preprocessing script that I will run before my first pipeline execution. 
 
 ### Viewing MinIO
 Before actually writing code it might be a good idea to check the MinIO UI. 
@@ -77,73 +77,86 @@ When using the default configuration the MinIO ip is just:
 Without a suffix.
 
 ### 2. Loading the data
-The Iris dataset is built into sklearn so downloading it is very simple. This step would be replaced by any other way of pre-processing the data.
-
+We get the `tweet_eval` dataset from the `datasets` python library
 I added following code to load the dataset and write it to csv
 
 ```python
-# src/save_iris_to_minio.py
+# scripts/prepare_data.py
 
-# Load the data from sklearn
-iris = load_iris(as_frame=True)
-# This uses pandas to concatenate 2 columns from the dataset into one
-df = pd.concat(
-    [
-        iris.data, 
-        pd.DataFrame(iris.target, columns=["target"])
-    ]
-    , axis=1
-)
-# Using StringIO to create an in-memory csv file to write to minio.
-csv_buffer = StringIO()
-# Writing the concatinated table into the temporary in-memory CSV file.
-df.to_csv(csv_buffer, index=False)
+# Label mapping
+label_map = {
+    0: "anger",
+    1: "joy",
+    2: "optimism",
+    3: "sadness"
+}
+
+# Load the 'Emotion' subset
+dataset = load_dataset("tweet_eval", "emotion")
+
+# Convert to dataframes and write to CSV file
+for split in ["train", "validation", "test"]:
+    df = dataset[split].to_pandas()
+    df['label'] = df['label'].map(label_map)
+    df.to_csv(f"{split}.csv", index=False)
 ```
 
-Your training data doesn't necessarily need to be in CSV format. It all depends on your method of training. This step of the process completely depends on your usecase and data.
+Your training data doesn't necessarily need to be in CSV format. It all depends on your method of training. This step of the process completely depends on your usecase and data. 
+MinIO accepts all types of data, as long as it can be saved as an object, but that is almost every type.
 
 ### 3. Uploading it to MinIO
 Actually uploading the data to MinIO is very simple:
 
 ```python
-# src/save_iris_to_minio.py
+# scripts/prepare_data.py
 
 # Uploading the files
-# Bucket -> The name of the bucket to use in MinIO
-# Key -> The name of the directory/file in MinIO
-# Body -> The object you want to upload to MinIO 
-s3.put_object(Bucket="ml-data", Key="iris/iris.csv", Body=csv_buffer.getvalue())
+# We loop over the different files of data. 
+# Uploading them using the s3 client.
+for split in ['train', 'validation', 'test']:
+    s3.upload_file(f"{split}.csv", bucket_name, f"{split}.csv")
 ```
+The body of the function should be like this:
+`s3.upload_file("<localpath>", "<bucket-name>", "<path-in-bucket>")`
 
-If you want to upload local files that is also possible:
-```python
-# Uploading the files
-# line 1 -> Where the file is located locally
-# line 2 -> The name of the bucket to use in MinIO
-# line 3 -> The name of the directory/file in MinIO
-s3.upload_file(
-    "./data/saves/trainset.npz", 
-    "ml-data",
-    "data/train.npz" 
-)
-```
+**Make sure to upload to an existing bucket in MinIO!**
 
-Make sure to upload to an existing bucket in MinIO!
-
-When running the `save_iris_to_minio.py` script it will now upload my data to MinIO:
-![Saved data to minio](https://i.imgur.com/KaMAAxj.png)
+When running the `prepare_data.py` script on your local machine, it will now upload my data to MinIO:
+![Saved data to minio](https://i.imgur.com/JRqoNYu.png)
 
 ---
 
-## Creating a training script and implementing MLFLow
+## Creating multiple training scripts and implementing MLFLow
 
-This step is mostly dependent on your usecase, i will create a very simple training script for the iris model but this will probably way more extensive in your case.
+This step is mostly dependent on your usecase, I will be training the sentiment analysis model using scikit-learn, but there are multiple good libraries to do this, as well as, a lot of different types of models to use.
 
-Make sure to install the mlflow python library using:
+Before starting, make sure to install the MLFlow python library using:
 
 `pip install mlflow`
 
-### 1. Connecting to MinIO and downloading data
+### 1. Connecting to MinIO and downloading data *(load_data.py)*
+
+
+#### Argument parser:
+To send data from one step to another, we have to use the argument parser. In this case we want to send our data from the `load_data` to `train_model` step. To do this we want to use output arguments in the load data script, and input arguments in the trail model script.
+For now we will only focus on the output parameters.
+
+At the top of the script we will declare them like this:
+
+```python
+# scripts/load_data.py
+
+parser = argparse.ArgumentParser()
+parser.add_argument('--output_dataset_train', type=str, required=True)
+parser.add_argument('--output_dataset_validation', type=str, required=True)
+parser.add_argument('--output_dataset_test', type=str, required=True)
+
+args = parser.parse_args()
+```
+In the next step you will see how to use them.
+
+#### Downloading from MinIO and saving them on the arguments:
+
 Because we need to get the training data from MinIO we need to create another connection with the MinIO client. 
 
 This is mostly the same as we did in the last step. But because we are using this script in the pipeline (inside of our kubernetes architecture) we are able to use our internal ip to connect with MinIO. The default internal ip for MinIO is:
@@ -153,7 +166,7 @@ This is mostly the same as we did in the last step. But because we are using thi
 So a connection would look like this:
 
 ```python
-# src/train.py
+# scripts/load_data.py
 
 import boto3
 
@@ -166,61 +179,172 @@ s3 = boto3.client('s3',
     aws_secret_access_key='minio123',
     # Region, You can keep this us-east-1
     region_name='us-east-1'
+
+bucket_name = "ml-data"
 )
 ```
 
 Next step is how to download the data from MinIO to start training with it. This is easily done using:
 
 ```python
-# src/train.py
+# scripts/load_data.py
 
-# Download dataset
-obj = s3.get_object(Bucket="datasets", Key="iris/iris.csv")
-df = pd.read_csv(StringIO(obj['Body'].read().decode('utf-8')))
+# The files we want to download from MinIO
+files = ["train.csv", "validation.csv", "test.csv"]
+
+# Set the output paths, our arguments we specified in the previous steps. 
+# Make sure the names match the declaration.
+output_paths = {
+    "train": args.output_dataset_train,
+    "validation": args.output_dataset_validation,
+    "test": args.output_dataset_test
+}
+
+# We loop over the files and download them from MinIO. 
+# Putting them in dataframes once more. 
+for split in ["train", "validation", "test"]:
+    local_path = f"/tmp/{split}.csv"
+    s3.download_file(bucket_name, f"{split}.csv", local_path)
+    df = pd.read_csv(local_path)
+    df.to_csv(output_paths[split], index=False)
 ``` 
-The first line downloads the object from MinIO (important for your usecase) and the second line will put use pandas to put it in a dataframe, this line might be different in your case.
+After doing this the data is in our ecosystem, inside of the arguments. In our next pipeline step we can retreive the data from the arguments.
 
-### 2. Training the model and using MLFLow
+### 2. Training the model and using MLFLow *(train_model.py)*
+
+#### Argument parser:
+Now we want to retreive our data we sent over from the _load data_ step.
+This looks a lot like how we did it in the previous step:
+
+```python
+parser = argparse.ArgumentParser()
+
+parser.add_argument('--input_dataset_train', type=str, required=True)
+parser.add_argument('--input_dataset_validation', type=str, required=True)
+parser.add_argument('--input_dataset_test', type=str, required=True)
+
+args = parser.parse_args()
+```
+
+Now you can see we put input instead of output, it is always very important to keep this straight. If you put them wrong or with a typo, it will not work. We can now use the data like this:
+```python
+# Load our datasets from the arguments, taken from MinIO in previous pipeline step.
+df_train = pd.read_csv(args.input_dataset_train)
+df_val = pd.read_csv(args.input_dataset_validation)
+df_test = pd.read_csv(args.input_dataset_test)
+``` 
+
+We are now ready to use this data to train!
+
+#### Training the model:
+
 I won't explain this part in depth because this will be heavily depend on your training method. The training in this workflow can happen any way using all machine learning libraries supported by MLFLow.
 
 This is my training code:
 ```python
-# Split data
-X = df.drop("target", axis=1)
-y = df["target"]
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
+# MLFlow setup:
+MLFLOW_TRACKING_URI = "http://istio-ingressgateway.istio-system.svc.cluster.local/mlflow/"
+mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
 
-# MLflow
-mlflow.set_tracking_uri("http://istio-ingressgateway.istio-system.svc.cluster.local/mlflow") # bv. http://mlflow-service.kubeflow:5000
-mlflow.set_experiment("iris-experiment")
+# Creating an MLFlow experiment
+experiment_name = "mood-machine-experiment"
+try:
+    mlflow.create_experiment(
+        name=experiment_name,
+        artifact_location="s3://ml-models/"
+    )
+except mlflow.exceptions.MlflowException:
+    pass
 
-with mlflow.start_run():
-    model = DecisionTreeClassifier()
-    model.fit(X_train, y_train)
+print("MLflow Tracking URI:", mlflow.get_tracking_uri())
 
-    acc = model.score(X_test, y_test)
+# Encoding our labels, ML models work with numeric labels.
+# We transform our string labels to numeric labels using the LabelEncoder()
+# joy -> 1
+# sadness -> 3
+le = LabelEncoder()
+y_train = le.fit_transform(df_train['label'])
+y_val = le.transform(df_val['label'])
+y_test = le.transform(df_test['label'])
 
-    mlflow.log_param("model_type", "DecisionTreeClassifier")
+# Always use experiment id 1!!!
+with mlflow.start_run(experiment_id="1") as run:
+# Training pipeline
+# We are using a TfidVectorizer to transorm our text to numeric values
+# Text: "I feel sad" -> Vector: [0, 0.4, 0.1, 0, 0.9]
+    pipeline = Pipeline([
+      ('tfidf', TfidfVectorizer(max_features=5000, ngram_range=(1,1))),
+      ('clf', LogisticRegression(max_iter=2000, penalty='l2', solver='liblinear', C=10))
+    ])
+    
+    param_grid = {
+        'tfidf__max_features': [3000, 5000, 8000],
+        'tfidf__ngram_range': [(1, 1), (1, 2)],
+        'clf__C': [0.1, 1.0, 10],
+        'clf__penalty': ['l2'],
+        'clf__solver': ['liblinear', 'saga']
+    }
+    
+    grid = GridSearchCV(pipeline, param_grid, cv=3, scoring='f1_weighted', verbose=2, n_jobs=-1)
+
+    pipeline.fit(df_train['text'], y_train)
+
+    grid.fit(df_train['text'], y_train)
+
+    pipeline = grid.best_estimator_
+    print("Best params:", grid.best_params_)
+    mlflow.log_params(grid.best_params_)
+    
+    # Evaluate our model on our test set
+    y_pred = pipeline.predict(df_test["text"])
+    acc = accuracy_score(y_test, y_pred)
+    f1 = f1_score(y_test, y_pred, average='weighted')
+
     mlflow.log_metric("accuracy", acc)
+    mlflow.log_metric("f1_score", f1)
 
-    logged_model = mlflow.sklearn.log_model(model, "model")
+    # Classification report
+    report = classification_report(y_test, y_pred, target_names=le.classes_, output_dict=True)
+    report_df = pd.DataFrame(report).transpose()
 
+    print("label encoders:")
+    print(dict(enumerate(le.classes_)))
+
+    # Save combined model + label encoder
+    model_bundle = {'model': pipeline, 'label_encoder': le}
+    joblib.dump(model_bundle, args.output_model)
+
+    # Forceer flush en controleer het bestand
+    assert os.path.exists(args.output_model), "Model file not found!"
+    assert os.path.getsize(args.output_model) > 0, "Model file is empty!"
+
+    
+    # Log the model as an MLflow model
+    logged_model = mlflow.sklearn.log_model(
+        sk_model=pipeline,
+        artifact_path="model",
+        registered_model_name="mood-machine-model",
+        input_example=[df_train["text"].iloc[0]]
+    )
+    
     mlflow.register_model(
         model_uri=logged_model.model_uri,
-        name="iris-model"
+        name="mood-machine-model"
     )
+    
 ```
 
-The first 3 lines split the data into training/testing headers and train/test data.
+I will explain some important parts of this.
 
-Then we are configuring our MLFlow endpoint. It is very important to take the right tracking URL for MLFLow.
+First of we are configuring our MLFlow endpoint. It is very important to take the right tracking URL for MLFLow.
 We can use the internal URL for this again. The default internal url for MLFlow in our platform is:
 
 `http://istio-ingressgateway.istio-system.svc.cluster.local/mlflow`
 
 With mlflow.set_experiment you are able to declare an experiment name.
 
-`mlflow.start_run()` is used to start a new training run. If you have a training cycle with multiple epochs the epochs are looped inside of here.
+`mlflow.start_run()` is used to start a new training run. If you have a training cycle with multiple epochs the epochs are looped inside of here. We don't use epochs in this case though.
+**Make sure to use experiment id 1 as a parameter**
 
 We can use `mlflow.log_param("param_name", "param_value")` to declare the parameters that were used for this run.
 
@@ -235,7 +359,8 @@ The final important step is to register your model to the MLFlow model registry,
 
 ### 3. Preparing the training script as a docker image
 
-In the root of your project create a requirements.txt, this needs to contain all the python packages that your training script needs to run (Our platform needs at least boto3 and mlflow).
+In the root of your project create a requirements.txt, this needs to contain all the python packages that your training script needs to run.
+Our platform needs at least boto3 and mlflow, the other packages are base on your training cycle.
 Also create a Dockerfile looking something like this:
 ```Dockerfile
 FROM python:3.9
@@ -256,67 +381,15 @@ docker push metro-mlops-demo
 ```
 
 Now we can use this image to build our pipeline.
-Currently my docker image exists of one script. You are also able to upload an entire directory of scripts in your image, this will allow you to use all of these scripts as pipeline steps.
+Currently my docker image exists of three scripts (the third one i will explain later). You are able to upload an entire directory of scripts in your image, this will allow you to use all of these scripts as pipeline steps.
 
 ## Setting up a kubeflow Pipeline
 
-The next step is to create a pipeline in kubeflow to automize our machine learning workflow. I split up the script we created earlier into 2 different scripts. A script to load the data from MinIO, and the actual training script. This will give us an example to use arguments.
+The next step is to create a pipeline in kubeflow to automize our machine learning workflow.
 
 We can't just use the loaded data from the first step of the pipeline in the second step (this will become more clear soon). To send data from one step to the next you are able to use argument parser.
 
-### 1. Spliting the script, and adding the argument parser
-
-We start out by splitting up the script that i started with into a script that will load the data and the other script to train the model.
-
-#### Data loading script
-Start by importing the `argparse` library and define arguments like this:
-
-```python
-parser = argparse.ArgumentParser()
-parser.add_argument('--output_dataset_train_X', type=str, required=True)
-parser.add_argument('--output_dataset_test_X', type=str, required=True)
-parser.add_argument('--output_dataset_train_y', type=str, required=True)
-parser.add_argument('--output_dataset_test_y', type=str, required=True)
-
-args = parser.parse_args()
-```
-
-You can define an argument for everything you want to pass on in the pipeline. This will only declare it, you need to pass the values to it aswell.
-This is done by doing:
-
-```python
-# Save datasets to the provided paths
-X_train.to_csv(args.output_dataset_train_X, index=False)
-X_test.to_csv(args.output_dataset_test_X, index=False)
-y_train.to_csv(args.output_dataset_train_y, index=False)
-y_test.to_csv(args.output_dataset_test_y, index=False)
-```
-
-#### Training script
-
-Now all we have to do to use these datasets in our training script is declare the arguments once more.
-
-```python
-# Parse arguments
-parser = argparse.ArgumentParser()
-parser.add_argument('--dataset_train_X', type=str, required=True)
-parser.add_argument('--dataset_test_X', type=str, required=True)
-parser.add_argument('--dataset_train_y', type=str, required=True)
-parser.add_argument('--dataset_test_y', type=str, required=True)
-args = parser.parse_args()
-
-X_train = pd.read_csv(args.dataset_train_X)
-X_test = pd.read_csv(args.dataset_test_X)
-y_train = pd.read_csv(args.dataset_train_y)
-y_test = pd.read_csv(args.dataset_test_y)
-```
-
-By adding this we will be able to use the datasets in our training script same as before.
-
-You should take a look at the `load_data.py` and `train.py` to get a better overview of how the argument system works.
-
-
-### 2. Creating the pipeline script
+### 1. Creating the pipeline script
 
 The pipeline is script is made up of 3 parts. The components, the pipeline declaration and the compiler declaration.
 Combining these components makes for an easy way to build a pipeline
@@ -329,17 +402,15 @@ Components is how you define the different steps of your pipeline. In this demo 
 def load_data(
     output_dataset_train: Output[Dataset],
     output_dataset_test: Output[Dataset],
-    output_dataset_train_y: Output[Dataset],
-    output_dataset_test_y: Output[Dataset]
+    output_dataset_validation: Output[Dataset],
 ):
     return dsl.ContainerSpec(
-        image='timsmans/metro-mlops-demo:latest', 
+        image='timsmans/metro-mlops-mood-machine:latest', 
         command=['python', '/app/load_data.py'],
         args=[
-            '--output_dataset_train_X', output_dataset_train_X.path,
-            '--output_dataset_train_y', output_dataset_train_y.path,
-            '--output_dataset_test_X', output_dataset_test_X.path,
-            '--output_dataset_test_y', output_dataset_test_y.path,
+            '--output_dataset_train', output_dataset_train.path,
+            '--output_dataset_test', output_dataset_test.path,
+            '--output_dataset_validation', output_dataset_validation.path,
         ]
     )
 ```
@@ -358,8 +429,8 @@ Inside of the pipeline declaration we will set up the flow of the pipeline, we d
 
 ```python
 @dsl.pipeline(
-    name="demo-pipeline",
-    description="End-to-end demo pipeline using the Iris dataset"
+    name="mood-machine-pipeline",
+    description="End-to-end mood-machine demo pipeline using tweet_eval dataset"
 )
 def demo_pipeline():
     # Data loading
@@ -367,16 +438,19 @@ def demo_pipeline():
     
     # Training
     train_task = train_model(
-        dataset_train_X=load_data_task.outputs['output_dataset_train_X'],
-        dataset_test_X=load_data_task.outputs['output_dataset_test_X'],
-        dataset_train_y=load_data_task.outputs['output_dataset_train_y'],
-        dataset_test_y=load_data_task.outputs['output_dataset_test_y']
+        input_dataset_train=load_data_task.outputs['output_dataset_train'],
+        input_dataset_test=load_data_task.outputs['output_dataset_test'],
+        input_dataset_validation=load_data_task.outputs['output_dataset_validation'],
     )
+
+    serve_model_task = serve_latest_model()
     
     train_task.set_caching_options(False)
+    serve_model_task.set_caching_options(False)
 
     # Define execution order
     train_task.after(load_data_task)
+    serve_model_task.after(train_task)
 ```
 
 At the top of this function we use the `@dsl.pipeline` decorator. Inside of this decorator we can supply a name and description for our pipeline.
@@ -420,7 +494,7 @@ Go ahead and fill in the name and description, also make sure to select the righ
 When you have done this, go ahead and click `Create`
 
 If successful, this should display something like this:
-![Added pipeline](https://i.imgur.com/OtCAcS4.png)
+![Added pipeline](https://i.imgur.com/Azc3OeM.png)
 
 This is the overview of your pipeline, if you want to test if everything works like it should it's time to create a new run.
 Doing this is very easy. Go ahead and click the `Create run` button.
@@ -428,7 +502,7 @@ Doing this is very easy. Go ahead and click the `Create run` button.
 You can asign a name and description to the run. Because we are using MLFlow for experiment tracking you can keep the experiment field as default.
 
 Go ahead and click start, this will start a run:
-![Active run display](https://i.imgur.com/4187YiV.png)
+![Active run display](https://i.imgur.com/T2CXpB8.png)
 
 A step will display a red exclamation mark if it fails. You can debug this viewing the logs of a step by clicking that step and looking at the 'logs' tab.
 
@@ -548,3 +622,53 @@ The most important parts when using our served model is:
 - Using the right url, this should be  `http://<external-ip>/mlflow-model/invocations`
 - Setting the `Host` header to `mlflow-model.local` If you don't do this, you will not be able to access your model.
 - If you are using a Minikube cluster make sure to use `minikube tunnel`
+
+
+#### StreamLit frontend, using the API
+
+I created a small frontend using StreamLit, it uses the API and serves as a good example of how to inference your trained AI model:
+
+```python
+# app/app.py
+
+import streamlit as st
+import requests
+
+# Config, make sure to use the right API URL here.
+API_URL = "http://localhost/mlflow-model/invocations"
+HEADERS = {
+    "Content-Type": "application/json",
+    "Host": "mlflow-model.local"
+}
+
+# Label mapping
+label_map = {
+    0: "anger",
+    1: "joy",
+    2: "optimism",
+    3: "sadness"
+}
+
+# Creating the UI using StreamLit
+st.set_page_config(page_title="Mood Machine", page_icon="🧠")
+st.title("🧠 Mood Machine")
+st.subheader("Let AI analyse your mood")
+
+text_input = st.text_area("Enter a sentence:", height=100)
+
+if st.button("Analyse emotions") and text_input.strip() != "":
+    payload = {"instances": [text_input.strip()]}
+
+    try:
+        response = requests.post(API_URL, json=payload, headers=HEADERS)
+        response.raise_for_status()
+        print(response.json())
+        pred = response.json()["predictions"][0]
+        emotion = label_map.get(pred, "Unkown")
+
+        st.success(f"Feeling: **{emotion.upper()}**")
+
+    except Exception as e:
+        st.error(f"Error during prediction: {e}")
+
+```
