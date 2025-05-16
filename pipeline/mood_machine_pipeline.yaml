@@ -1,0 +1,125 @@
+# PIPELINE DEFINITION
+# Name: mood-machine-pipeline
+# Description: End-to-end mood-machine demo pipeline using tweet_eval dataset
+components:
+  comp-load-data:
+    executorLabel: exec-load-data
+    outputDefinitions:
+      artifacts:
+        output_dataset_test:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+        output_dataset_train:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+        output_dataset_validation:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+  comp-serve-latest-model:
+    executorLabel: exec-serve-latest-model
+  comp-train-model:
+    executorLabel: exec-train-model
+    inputDefinitions:
+      artifacts:
+        input_dataset_test:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+        input_dataset_train:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+        input_dataset_validation:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+    outputDefinitions:
+      artifacts:
+        output_model:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+deploymentSpec:
+  executors:
+    exec-load-data:
+      container:
+        args:
+        - --output_dataset_train
+        - '{{$.outputs.artifacts[''output_dataset_train''].path}}'
+        - --output_dataset_test
+        - '{{$.outputs.artifacts[''output_dataset_test''].path}}'
+        - --output_dataset_validation
+        - '{{$.outputs.artifacts[''output_dataset_validation''].path}}'
+        command:
+        - python
+        - /app/load_data.py
+        image: timsmans/metro-mlops-mood-machine:latest
+    exec-serve-latest-model:
+      container:
+        command:
+        - python
+        - /app/serve_model.py
+        image: timsmans/metro-mlops-mood-machine:latest
+    exec-train-model:
+      container:
+        args:
+        - --input_dataset_train
+        - '{{$.inputs.artifacts[''input_dataset_train''].path}}'
+        - --input_dataset_validation
+        - '{{$.inputs.artifacts[''input_dataset_validation''].path}}'
+        - --input_dataset_test
+        - '{{$.inputs.artifacts[''input_dataset_test''].path}}'
+        - --output_model
+        - '{{$.outputs.artifacts[''output_model''].path}}'
+        command:
+        - python
+        - /app/train_model.py
+        image: timsmans/metro-mlops-mood-machine:latest
+pipelineInfo:
+  description: End-to-end mood-machine demo pipeline using tweet_eval dataset
+  name: mood-machine-pipeline
+root:
+  dag:
+    tasks:
+      load-data:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-load-data
+        taskInfo:
+          name: load-data
+      serve-latest-model:
+        cachingOptions: {}
+        componentRef:
+          name: comp-serve-latest-model
+        dependentTasks:
+        - train-model
+        taskInfo:
+          name: serve-latest-model
+      train-model:
+        cachingOptions: {}
+        componentRef:
+          name: comp-train-model
+        dependentTasks:
+        - load-data
+        inputs:
+          artifacts:
+            input_dataset_test:
+              taskOutputArtifact:
+                outputArtifactKey: output_dataset_test
+                producerTask: load-data
+            input_dataset_train:
+              taskOutputArtifact:
+                outputArtifactKey: output_dataset_train
+                producerTask: load-data
+            input_dataset_validation:
+              taskOutputArtifact:
+                outputArtifactKey: output_dataset_validation
+                producerTask: load-data
+        taskInfo:
+          name: train-model
+schemaVersion: 2.1.0
+sdkVersion: kfp-2.11.0

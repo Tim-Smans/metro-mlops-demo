@@ -15,7 +15,7 @@ MLFLOW_TRACKING_URI = "http://istio-ingressgateway.istio-system.svc.cluster.loca
 client = MlflowClient(tracking_uri=MLFLOW_TRACKING_URI)
 
 # Model name
-model_name = "iris-model"
+model_name = "mood-machine-model"
 
 # Get the latest model version
 latest_version = max(
@@ -24,13 +24,15 @@ latest_version = max(
 
 # Retrieve the download path and UUID
 latest_path = client.get_model_version_download_uri(model_name, latest_version)
-latest_uuid = latest_path.split("/")[4]
+latest_uuid = latest_path.split("/")[3]
+run_id = client.get_model_version(model_name, latest_version).run_id
+
 
 print(f"Latest path: {latest_path}")
 print(f"Latest UUID: {latest_uuid}")
 
 # Prefixes
-source_prefix = f"{latest_uuid}/artifacts/iris-model/"
+source_prefix = f"{latest_uuid}/artifacts/model/"
 latest_prefix = "latest/"
 
 print(f"Expected source prefix: ml-models/{source_prefix}")
