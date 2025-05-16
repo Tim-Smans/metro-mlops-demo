@@ -672,3 +672,6 @@ if st.button("Analyse emotions") and text_input.strip() != "":
         st.error(f"Error during prediction: {e}")
 
 ```
+
+
+![Streamlit app](https://i.imgur.com/0n9stzk.png)
